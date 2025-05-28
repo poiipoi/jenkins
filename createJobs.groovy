@@ -7,7 +7,6 @@ import jenkins.model.Jenkins
 stagingEnv = ['dco-staging']
 
 def createPipelineJob(jobInfo) {
-    envVars = Jenkins.instance.getGlobalNodeProperties()[0].getEnvVars()
     Boolean oldVersion = true
     if (Jenkins.instance.getVersion().toString() > '2.176.1') {
         oldVersion = false
