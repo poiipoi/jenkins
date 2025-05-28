@@ -20,17 +20,6 @@ def createPipelineJob(jobInfo) {
         }
         description(jobInfo.description)
         // Cron trigger is used only when enabled specifically in environment variables
-        if (envVars['JENKINS_CRON_ENABLED'] == "True") {
-            if (jobInfo.containsKey('triggers')) {
-                triggers {
-                    if (jobInfo.triggers.containsKey('cron')) {
-                        cron(jobInfo.triggers.cron.toString())
-                    }
-                }
-            }
-        } else {
-            println "Cron disabled"
-        }
         if (jobInfo.containsKey('parameters')) {
             parameters {
                 jobInfo.parameters.each { parameterInfo ->
