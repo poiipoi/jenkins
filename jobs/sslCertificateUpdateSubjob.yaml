@@ -1,0 +1,42 @@
+jobs:
+  - name: ssl_certificate_update_subjob
+    type: pipeline
+    parameters:
+      - name: INVENTORY
+        type: string
+        description: "Used to pass inventory params from upstream jobs"
+        value: ''
+      - name: BUILD_VERSION
+        type: string
+        description: 'msp build version'
+        value: ''
+      - name: BUILDS_FILE_PATH
+        type: string
+        description: 'Full path to builds file in repo msp-scm'
+        value: ''
+      - name: MASTER_WORKSPACE
+        type: string
+        decription: 'Used from upstream job to pass master workspace'
+        value: ''
+      - name: PLAYBOOK_NAME
+        type: string
+        decription: 'Used to define custom playbook name to execute by Ansible'
+        value: ''
+      - name: ANSIBLE_OPTIONS
+        type: string
+        decription: 'Used from upstream job to pass additional ansible options'
+        value: ''
+      - name: CHAT_NAME
+        type: string
+        decription: '(OPTIONAL) Add the name of the chat for the job to post messages in.'
+        value: ''
+      - name: SHARED_MSP_SCM_DIRS
+        type: string
+        decription: 'Paths to pre-downloaded msp-scm environment'
+        value: '{}'
+      - name: EXPIRINNG_CERTS_LIST
+        type: string
+        decription: 'Used from upstream job to pass expiring certificate options'
+        value: ''
+    pipeline_template: jobs/templates/sslCertificateUpdateSubjob.template
+    pipeline_vars: {}

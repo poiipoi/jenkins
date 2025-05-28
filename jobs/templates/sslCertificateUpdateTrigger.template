@@ -1,0 +1,112 @@
+@Library('dco') import acronis.dco.*
+import groovy.json.JsonOutput
+def utils = new acronis.dco.Utilities(this)
+
+INVENTORY = 'production-deployment-environments/inventories/production/globalrouter-baas'
+dc = utils.findDCByInventory(INVENTORY)
+deployer_id = utils.getDeployUserID(dc)
+deployer_username = utils.getDeployUserUsername(dc)
+expiring_certs = 'expiring_certs.json'
+renew_certificate = false
+BUILD_VERSION= '25.02'
+PLAYBOOK_NAME = "playbook_ssl_certificate.yml"
+EXTRA_VARS = " -e expiry_days=31"
+
+
+
+
+def printToConsoleAndSendMessage(String message) {
+    echo "\${message}"
+    ChatHelper chat = new ChatHelper(this, [channel: "\${params.CHAT_NAME}"])
+    chat.sendMessage(message)
+}
+
+
+node('master') {
+    cleanWs()
+
+    utils.defineAbsentParameters()
+
+    stage('Checkout') {
+        printToConsoleAndSendMessage("preparing environment")
+        utils.checkout(BUILD_VERSION,GIT_REPO,GIT_BRANCH,GIT_CHECKOUT)
+    }
+
+    stage('Run Custom Playbook') {
+        ansible_main_vault = utils.findMainVault()
+        ansible_additional_vaults = utils.prepareNonMainVaults()
+        List credentials = [
+            file(credentialsId: ansible_main_vault, variable: 'ANSIBLE_VAULT_PASSWORD_FILE'),
+            string(credentialsId: 'sado_jenkins_zta_token', variable: 'ZTA_TOKEN'),
+        ]
+        withCredentials(credentials) {
+            ansiColor('xterm') {
+                def ansible_status
+                String ansibleCmd = "ansible-playbook \${PLAYBOOK_NAME}  \${EXTRA_VARS}"
+
+                 utils.callInDocker({
+                    sshagent([deployer_id]) {
+                        ansible_status = sh returnStatus: true, script: """
+                            export ANSIBLE_FORCE_COLOR=true
+                            \${ansibleCmd}
+                        """
+                    }
+                })
+                if(ansible_status != 0) {
+                    def log_helper = new acronis.dco.LogHelper(this)
+                    if (log_helper.getBuildLastNLines(120).join(' ').contains('ERROR! Specified hosts and/or --limit does not match any hosts')) {
+                        currentBuild.result = 'SUCCESS'
+                    } else {
+                        currentBuild.result = 'FAILURE'
+                    }
+                }
+            }
+        }
+    }
+    stage('Trigger subjob for expiring certs'){
+        script{
+            if (fileExists(expiring_certs)) {
+                echo "Expiring certs exists, continuing pipeline."
+            }else{
+                echo "No expiring certs. Ending pipeline with success."
+                currentBuild.result = 'SUCCESS'
+                return
+            }
+            try{
+                def expirinng_certs_file = readFile(expiring_certs).trim()
+                def expirinng_certs_list = readJSON text: expirinng_certs_file
+                if (!(expirinng_certs_list instanceof List)){
+                     error("The expirinng_certs_list does not contain an array")
+                }
+
+                if (expirinng_certs_list.size() < 1){
+                    printToConsoleAndSendMessage("The expirinng_certs_list is empty. Skipping subjob triggers.")
+                }else{
+                    expirinng_certs_list.each { item ->
+                        try{
+                            printToConsoleAndSendMessage( "Starting subjob to renew ssl certificate for \${item.project} in \${item.pdc} - \${item?.vdc}")
+                            build(job: "ssl_certificate_update_subjob",
+                                    parameters: [
+                                            string(name: 'INVENTORY', value: INVENTORY),
+                                            string(name: 'BUILD_VERSION', value: BUILD_VERSION),
+                                            string(name: 'MASTER_WORKSPACE', value: "\${WORKSPACE}"),
+                                            string(name: 'PLAYBOOK_NAME', value: PLAYBOOK_NAME),
+                                            string(name: 'EXPIRINNG_CERTS_LIST', value: JsonOutput.toJson(item)),
+                                            string(name: 'ANSIBLE_OPTIONS', value: " -e project=\${item.project} -e pdc=\${item.pdc} -e vdc=\${item.vdc} -e check_cert_expiry=\${false} -e renew_certificate=\${renew_certificate} ")
+                                    ]
+                            )
+                            printToConsoleAndSendMessage('subjob successfully completed')
+
+                        }catch(error){
+                            printToConsoleAndSendMessage("subjob failed for \${item.pdc}-\${item.vdc} in \${item.project}: \${error}")
+                            error(error)
+                        }
+                    }
+                }
+            }catch (error){
+                echo "Error in stage: Trigger subjob for expiring certs"
+                error("\${error}")
+            }
+        }
+    }
+}
