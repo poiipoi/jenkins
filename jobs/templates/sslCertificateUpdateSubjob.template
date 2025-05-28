@@ -23,7 +23,8 @@ PR_LIST = [
     "pr_target_branch": "master",
     "pr_files": "--all",
     "pr_reviewers": "ahmed.gheith amiklashevich",
-    "sshagent_credential": "dco-deployer"
+    "sshagent_credential": "dco-deployer",
+    "pr_message": "[Jenkins Automated] Update SSL Certificate for \\\${pdc}-\\\${vdc}  - Build: \\\${BUILD_NUMBER}, Job: \\\${JOB_NAME}"
   ]
 ]
 
