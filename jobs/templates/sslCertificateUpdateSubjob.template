@@ -53,7 +53,7 @@ def String getPlayboyName(String project){
 
 def extractComponents(String summary) {
     String normalized = summary.replaceAll("\\s+", "")
-    def pattern = //^\[DCO/\]SSLCertificateRenewal/\|(.*?)/\|(.*?)/\|(.*?)$//
+    def pattern = //^/\[DCO/\]SSLCertificateRenewal/\|(.*?)/\|(.*?)/\|(.*?)$//
     def matcher = (normalized =~ pattern)
 
     if (matcher.matches()) {
