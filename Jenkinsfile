@@ -1,7 +1,5 @@
 pipeline {
-    agent {
-        label 'master'
-    }
+    agent any
     stages {
         stage('Seeding jobs') {
             steps {
