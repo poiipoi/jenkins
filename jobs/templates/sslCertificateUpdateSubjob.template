@@ -1,8 +1,4 @@
 @Library('dco') import acronis.dco.*
-import acronis.dco.LogHelper
-import static groovy.json.JsonOutput.toJson
-import acronis.dco.metrics.PushGateway
-
 
 utils = new Utilities(this)
 
