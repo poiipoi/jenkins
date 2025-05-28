@@ -1,4 +1,9 @@
-@Library('dco') import acronis.dco.*
+@Library('dco')
+import acronis.dco.Utilities
+import acronis.dco.LogHelper
+import static groovy.json.JsonOutput.toJson
+import acronis.dco.metrics.PushGateway
+
 
 utils = new Utilities(this)
 
@@ -19,7 +24,7 @@ PR_LIST = [
     "pr_files": "--all",
     "pr_reviewers": "ahmed.gheith amiklashevich",
     "sshagent_credential": "dco-deployer",
-    "pr_message": "[Jenkins Automated] Update SSL Certificate for \\\${pdc}-\\\${vdc}  - Build: \\\${BUILD_NUMBER}, Job: \\\${JOB_NAME}"
+    "pr_message": "[Jenkins Automated] Update SSL Certificate for \${pdc}-\${vdc}  - Build: \${BUILD_NUMBER}, Job: \${JOB_NAME}"
   ]
 ]
 
@@ -28,13 +33,13 @@ node(slave_label) {
         main()
         env.slave_name = env.NODE_NAME
         env.slave_workspace = env.WORKSPACE
-        // createPR()
+        createPR()
         cleanWs()
     })
 }
 
 def printToConsoleAndSendMessage(String message) {
-    echo "\${message}"
+    echo "${message}"
 }
 
 def String getPlayboyName(String project){
@@ -48,18 +53,18 @@ def String getPlayboyName(String project){
 
 def extractComponents(String summary) {
     String normalized = summary.replaceAll("\\s+", "")
-    def pattern = /^\\[DCO\\]SSLCertificateRenewal\\|(.*?)\\|(.*?)\\|(.*?)$/
+    def pattern = /^\[DCO\]SSLCertificateRenewal\|(.*?)\|(.*?)\|(.*?)$/
     def matcher = (normalized =~ pattern)
 
     if (matcher.matches()) {
-        echo "Successfully extracted components from ticket summary: \${summary}"
+        echo "Successfully extracted components from ticket summary: ${summary}"
         return [
             project: matcher[0][1],
             pdc: matcher[0][2],
             vdc: matcher[0][3]
         ]
     } else {
-        echo "Failed to extract components from summary: '\${summary}' - This ticket was not created by automation [Skipping]"
+        echo "Failed to extract components from summary: '${summary}' - This ticket was not created by automation [Skipping]"
     }
 }
 
@@ -136,7 +141,7 @@ def main() {
 
     env.slave_name = env.NODE_NAME
     env.slave_workspace = env.WORKSPACE
-    currentBuild.displayName = "#\${BUILD_ID}: \${expirinng_certs_list.pdc}:\${expirinng_certs_list?.vdc}"
+    currentBuild.displayName = "#${BUILD_ID}: ${expirinng_certs_list.pdc}:${expirinng_certs_list?.vdc}"
 
     Map s = [:]
     try {
@@ -167,7 +172,7 @@ def main() {
 
     stage('Sync Workspace') {
         if (s && s.containsKey(NODE_NAME) && s[NODE_NAME] && fileExists(s[NODE_NAME])) {
-            sh "rsync -a --delete --force \${s[NODE_NAME]}/ \${WORKSPACE}/ "
+            sh "rsync -a --delete --force ${s[NODE_NAME]}/ ${WORKSPACE}/ "
         } else {
             sshagent([deployer_id]) {
                 utils.syncSlaveWorkspaceEx(dc, deployer_id)
@@ -181,27 +186,27 @@ def main() {
 
             def components = extractComponents(jiraCurrentIssue.fields.summary)
             if (components?.project && components?.pdc ){
-                echo """\\
+                echo """\
                 Extracted Components from Jira Ticket:
-                Project: \${components?.project?.trim()?.toLowerCase() ?: 'NULL'}
-                PDC: \${components?.pdc?.trim()?.toLowerCase() ?: 'NULL'}
-                VDC: \${components?.vdc?.trim()?.toLowerCase() ?: 'NULL'}
+                Project: ${components?.project?.trim()?.toLowerCase() ?: 'NULL'}
+                PDC: ${components?.pdc?.trim()?.toLowerCase() ?: 'NULL'}
+                VDC: ${components?.vdc?.trim()?.toLowerCase() ?: 'NULL'}
                 """.stripIndent()
             }
             project = expirinng_certs_list.project
             pdc = expirinng_certs_list.pdc
             vdc = expirinng_certs_list?.vdc
 
-            echo """\\
+            echo """\
             Extracted Component from Trigger Job
-            Project: \${project}
-            PDC: \${pdc}
-            VDC: \${vdc}
+            Project: ${project}
+            PDC: ${pdc}
+            VDC: ${vdc}
             """.stripIndent()
 
             try{
                 if(ticketAlreadyExists(components, project, pdc, vdc)){
-                    echo "Ticket to renew certificate already exists for \${project} - \${pdc}\${vdc ? ' ' + vdc : ''}"
+                    echo "Ticket to renew certificate already exists for ${project} - ${pdc}${vdc ? ' ' + vdc : ''}"
                     existingTicket = jiraCurrentIssue
                     ticketExists = true
                     if (checkTicketApproval(jiraCurrentIssue)){
@@ -211,7 +216,7 @@ def main() {
                     env.TICKET_KEY = ticketKey
                 }
             }catch(error){
-                echo "Error verifying if ticket already exists: \${error}"
+                echo "Error verifying if ticket already exists: ${error}"
                 currentBuild.result = 'FAILURE'
             }
         }
@@ -240,14 +245,14 @@ def main() {
                 withCredentials(credentials) {
                     ansiColor('xterm') {
                         def ansible_status
-                        String ansibleCmd = "ansible-playbook \${PLAYBOOK_NAME}  " +
-                                " \${ANSIBLE_OPTIONS}"
+                        String ansibleCmd = "ansible-playbook ${PLAYBOOK_NAME}  " +
+                                " ${ANSIBLE_OPTIONS}"
 
                         utils.callInDocker({
                             sshagent([deployer_id]) {
                                 ansible_status = sh returnStatus: true, script: """
                                     export ANSIBLE_FORCE_COLOR=true
-                                    \${ansibleCmd}
+                                    ${ansibleCmd}
                                 """
                             }
                         })
@@ -266,7 +271,7 @@ def main() {
                     }
                 }
             }catch(error){
-                echo "Running playbook to generate new certificate failed: \${error}"
+                echo "Running playbook to generate new certificate failed: ${error}"
             }
         }
     }
@@ -277,22 +282,22 @@ def main() {
     }
 
     stage('Create jira ticket for expiring certificates') {
-            message = "Creating Jira Production Change ticket for \${project} - \${pdc}\${vdc ? ' ' + vdc : ''}"
+            message = "Creating Jira Production Change ticket for ${project} - ${pdc}${vdc ? ' ' + vdc : ''}"
             echo message
             try{
                 def newIssue = [id: "3833765",fields: [
                     project: [id: jiraTicketValues.project],
                     issuetype: [id: jiraTicketValues.issuetype],
-                    summary: "[DCO] SSL Certificate Renewal | \${project} | \${pdc} | \${vdc}",
+                    summary: "[DCO] SSL Certificate Renewal | ${project} | ${pdc} | ${vdc}",
                     description: EXPIRINNG_CERTS_LIST,
-                    customfield_17990: "\${vdc}",
+                    customfield_17990: "${vdc}",
                     customfield_17991: [ id: jiraTicketValues.changeType],
                     customfield_17994: jiraTicketValues.affectedProduct,
                     components: [[ id: jiraTicketValues.components]],
                     priority: [ id: jiraTicketValues.priority ],
                     customfield_24590: [ id: jiraTicketValues.downtimeFiveMinutes],
                     customfield_10180: jiraTicketValues.tag,
-                    customfield_24991: "\${vdc}",
+                    customfield_24991: "${vdc}",
                     customfield_24992: getPlayboyName(project),
                     customfield_22690: [id: jiraTicketValues.approvedByOperations],
                     customfield_22691: [id: jiraTicketValues.approvedByQA],
@@ -306,7 +311,7 @@ def main() {
             echo response.successful.toString()
             echo response.data.toString()
             }catch(error){
-                echo "Error creating new ticket: \${error}"
+                echo "Error creating new ticket: ${error}"
                 currentBuild.result = 'FAILURE'
             }
     }
@@ -353,41 +358,41 @@ def createPR() {
                 ]) {
                     sshagent(credentials: [it['sshagent_credential']]){
                         sh """
-                            cd \${WORKSPACE}/\${it['pr_repo']}
+                            cd ${WORKSPACE}/${it['pr_repo']}
                             echo "Some test" > files/test-ssl-key.key
                             git config user.name "Jenkins Automated"
                             git config user.email "team-dco-sre@acronis.com"
-                            git remote set-url origin ssh://git@git.acronis.com:7989/~$JIRA_USER/\${it['pr_repo']}.git
-                            git checkout hotfix/\${JOB_NAME}-\${BUILD_NUMBER} 2>/dev/null || git checkout -b hotfix/\${JOB_NAME}-\${BUILD_NUMBER}
+                            git remote set-url origin ssh://git@git.acronis.com:7989/~$JIRA_USER/${it['pr_repo']}.git
+                            git checkout hotfix/${JOB_NAME}-${BUILD_NUMBER} 2>/dev/null || git checkout -b hotfix/${JOB_NAME}-${BUILD_NUMBER}
                             git branch -u origin/master
-                            git add \${it['pr_files']} 2>/dev/null
-                            git diff-index --quiet HEAD || git commit -a -m "\${TICKET_KEY}" -m "\${it['pr_message']}" -m "dc: \${dc}" -m "URL: \${BUILD_URL}" -m "#NO-REF-ISSUE"
+                            git add ${it['pr_files']} 2>/dev/null
+                            git diff-index --quiet HEAD || git commit -a -m "${TICKET_KEY}" -m "${it['pr_message']}" -m "dc: ${dc}" -m "URL: ${BUILD_URL}" -m "#NO-REF-ISSUE"
                             git fetch
                             git pull
-                            git push --set-upstream origin hotfix/\${JOB_NAME}-\${BUILD_NUMBER}
+                            git push --set-upstream origin hotfix/${JOB_NAME}-${BUILD_NUMBER}
                         """
                     }
                     def submitpr = sh ( returnStdout:true,
                                         script: """
-                                        cd \${WORKSPACE}
-                                        python3 -u sre_tools/scripts/bitbucket_pr.py \\
-                                            -r \${it['pr_repo']} \\
-                                            -s hotfix/\${JOB_NAME}-\${BUILD_NUMBER} \\
-                                            -d \${it['pr_target_branch']} \
-                                            --description "\${it['pr_message']}, dc: \${dc}" \\
-                                            --reviewers \${it['pr_reviewers']} \\
-                                            --project \${it['pr_project']}
+                                        cd ${WORKSPACE}
+                                        python3 -u sre_tools/scripts/bitbucket_pr.py \
+                                            -r ${it['pr_repo']} \
+                                            -s hotfix/${JOB_NAME}-${BUILD_NUMBER} \
+                                            -d ${it['pr_target_branch']} \
+                                            --description "${it['pr_message']}, dc: ${dc}" \
+                                            --reviewers ${it['pr_reviewers']} \
+                                            --project ${it['pr_project']}
                                         """).trim()
                     if (submitpr){
                         println(submitpr)
                         if (!submitpr.contains('already up-to-date')){
-                            printToConsoleAndSendMessage("A PR was created: \${submitpr} when running this job \${env.BUILD_URL}")
+                            printToConsoleAndSendMessage("A PR was created: ${submitpr} when running this job ${env.BUILD_URL}")
                         }
                     }
                 }
             }
         } catch (exc) {
-            printToConsoleAndSendMessage("PR creation failed! Job: \${env.BUILD_URL}")
+            printToConsoleAndSendMessage("PR creation failed! Job: ${env.BUILD_URL}")
             throw exc
             currentBuild.result = 'FAILURE'
         }
