@@ -52,7 +52,7 @@ def String getPlayboyName(String project){
 }
 
 def extractComponents(String summary) {
-    String normalized = summary.replaceAll("\\\\s+", "")
+    String normalized = summary.replaceAll("\\s+", "")
     def pattern = /^\\[DCO\\]SSLCertificateRenewal\\|(.*?)\\|(.*?)\\|(.*?)\$/
     def matcher = (normalized =~ pattern)
 
@@ -222,33 +222,6 @@ def main() {
         }
     }
 
-    stage('Prepare git environment'){
-        PR_LIST.each {
-            withCredentials([
-                usernamePassword(
-                    credentialsId: it['pr_account'],
-                    usernameVariable: 'JIRA_USER',
-                    passwordVariable: 'JIRA_PASSWORD'),
-                string(
-                    credentialsId: 'sa_cp_dco_auto_zta_token',
-                    variable: 'ZTA_TOKEN')
-            ]) {
-                sshagent(credentials: [it['sshagent_credential']]){
-                    sh """
-                        cd ${WORKSPACE}/${it['pr_repo']}
-                        git init
-                        git remote add origin ssh://git@git.acronis.com:7989/~\$JIRA_USER/\${it['pr_repo']}.git
-                        git fetch origin
-                        git config user.name "Jenkins Automated"
-                        git config user.email "team-dco-sre@acronis.com"
-                        git checkout -f -b hotfix/\${JOB_NAME}-\${BUILD_NUMBER} origin/master || git checkout hotfix/\${JOB_NAME}-\${BUILD_NUMBER} 2>/dev/null
-                        git status
-                    """
-                }
-            }
-        }
-    }
-
     stage('Generate certificate upon approval from operations'){
         if (!ticketExists) {
             return false
@@ -325,7 +298,7 @@ def main() {
                     customfield_24590: [ id: jiraTicketValues.downtimeFiveMinutes],
                     customfield_10180: jiraTicketValues.tag,
                     customfield_24991: "\${vdc}",
-                    customfield_24992: "",
+                    customfield_24992: getPlayboyName(project),
                     customfield_22690: [id: jiraTicketValues.approvedByOperations],
                     customfield_22691: [id: jiraTicketValues.approvedByQA],
                     customfield_22692: [id: jiraTicketValues.approvedByDCOManagementEMEA],
@@ -386,8 +359,14 @@ def createPR() {
                     sshagent(credentials: [it['sshagent_credential']]){
                         sh """
                             cd \${WORKSPACE}/\${it['pr_repo']}
+                            echo "Test execution" > files/test-ssl-key.txt
+                            git config user.name "Jenkins Automated"
+                            git config user.email "team-dco-sre@acronis.com"
+                            git remote set-url origin ssh://git@git.acronis.com:7989/~\$JIRA_USER/\${it['pr_repo']}.git
+                            git checkout hotfix/\${JOB_NAME}-\${BUILD_NUMBER} 2>/dev/null || git checkout -b hotfix/\${JOB_NAME}-\${BUILD_NUMBER}
+                            git branch -u origin/master
                             git add \${it['pr_files']} 2>/dev/null
-                            git diff-index --quiet HEAD || git commit -a -m "#\${TICKET_KEY}" -m "\${it['pr_message']}" -m "dc: \${dc}" -m "URL: \${BUILD_URL}" -m "#NO-REF-ISSUE"
+                            git diff-index --quiet HEAD || git commit -a -m "\${TICKET_KEY}" -m "\${it['pr_message']}" -m "dc: \${dc}" -m "URL: \${BUILD_URL}" -m "#NO-REF-ISSUE"
                             git fetch
                             git pull
                             git push --set-upstream origin hotfix/\${JOB_NAME}-\${BUILD_NUMBER}
