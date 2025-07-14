@@ -13,6 +13,8 @@ slave_label = utils.findDockerSlave(dc)
 deployer_id = utils.getDeployUserID(dc)
 deployer_username = utils.getDeployUserUsername(dc)
 expirinng_certs_list = readJSON text: EXPIRINNG_CERTS_LIST
+doCreatePR = false
+
 
 env.JIRA_SITE = "JIRA_PROD"
 
@@ -53,7 +55,7 @@ def String getPlayboyName(String project){
 
 def extractComponents(String summary) {
     String normalized = summary.replaceAll("\\s+", "")
-    def pattern = /^\\[DCO\\]SSLCertificateRenewal\\|(.*?)\\|(.*?)\\|(.*?)\$/
+    def pattern = /^\[DCO\]SSLCertificateRenewal\|(.*?)\|(.*?)\|(.*?)$/
     def matcher = (normalized =~ pattern)
 
     if (matcher.matches()) {
@@ -106,9 +108,9 @@ def boolean ticketAlreadyExists(ticketDetails, String project, String pdc, Strin
 
 def main() {
     def ticketExists = false
-    def project
-    def pdc
-    def vdc
+    def project = expirinng_certs_list.project
+    def pdc = expirinng_certs_list.pdc
+    def vdc = expirinng_certs_list?.vdc
     def existingTicket
     def operationsApproval = false
     def ticketKey
@@ -186,34 +188,23 @@ def main() {
 
             def components = extractComponents(jiraCurrentIssue.fields.summary)
             if (components?.project && components?.pdc ){
-                echo """\
-                Extracted Components from Jira Ticket:
+                echo """                Extracted Components from Jira Ticket:
                 Project: \${components?.project?.trim()?.toLowerCase() ?: 'NULL'}
                 PDC: \${components?.pdc?.trim()?.toLowerCase() ?: 'NULL'}
                 VDC: \${components?.vdc?.trim()?.toLowerCase() ?: 'NULL'}
                 """.stripIndent()
             }
-            project = expirinng_certs_list.project
-            pdc = expirinng_certs_list.pdc
-            vdc = expirinng_certs_list?.vdc
-
-            echo """\
-            Extracted Component from Trigger Job
-            Project: \${project}
-            PDC: \${pdc}
-            VDC: \${vdc}
-            """.stripIndent()
 
             try{
                 if(ticketAlreadyExists(components, project, pdc, vdc)){
                     echo "Ticket to renew certificate already exists for \${project} - \${pdc}\${vdc ? ' ' + vdc : ''}"
                     existingTicket = jiraCurrentIssue
                     ticketExists = true
-                    if (checkTicketApproval(jiraCurrentIssue)){
-                        operationsApproval = true
-                    }
+                    operationsApproval = checkTicketApproval(jiraCurrentIssue)
                     ticketKey = getTicketKey(jiraCurrentIssue)
                     env.TICKET_KEY = ticketKey
+                    env.PDC = pdc
+                    env.VDC = vdc
                 }
             }catch(error){
                 echo "Error verifying if ticket already exists: \${error}"
@@ -222,18 +213,53 @@ def main() {
         }
     }
 
-    stage('Generate certificate upon approval from operations'){
-        if (!ticketExists) {
-            return false
-        }else if (!operationsApproval){
-            echo "Ticket has not been approved by Operations; Ending pipeline"
-            return false
-        }else {
-            input (
-                    message: "Are you sure you want to order certificate from Digicert ?",
+    // Check if production change ticket exists and approval by operations is true
+    if(ticketExists && operationsApproval){
+        doCreatePR = true
+        stage('Prepare git environment'){
+            PR_LIST.each {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: it['pr_account'],
+                        usernameVariable: 'JIRA_USER',
+                        passwordVariable: 'JIRA_PASSWORD'),
+                    string(
+                        credentialsId: 'sa_cp_dco_auto_zta_token',
+                        variable: 'ZTA_TOKEN')
+                ]) {
+                    sshagent(credentials: [it['sshagent_credential']]){
+                        sh """
+                            cd \${WORKSPACE}/\${it['pr_repo']}
+                            git init
+                            git remote add origin ssh://git@git.acronis.com:7989/~$JIRA_USER/\${it['pr_repo']}.git
+                            git fetch origin
+                            git config user.name "Jenkins Automated"
+                            git config user.email "team-dco-sre@acronis.com"
+                            git checkout -f -b hotfix/\${JOB_NAME}-\${BUILD_NUMBER} origin/master || git checkout hotfix/\${JOB_NAME}-\${BUILD_NUMBER} 2>/dev/null
+                            git status
+                        """
+                    }
+                }
+            }
+        }
+        stage('Generate certificate upon approval from operations'){
+            // Manual approval to prevent accidental generation of digicert certificate -
+            // NOTE: Aborting does not fail the pipeline
+            try {
+                def proceed = input(
+                    message: "Are you sure you want to order certificate from Digicert?",
                     ok: "Yes. Proceed"
-            )
-            echo 'Ordering new certificate...'
+                )
+                echo "Proceeding with certificate order..."
+            } catch (error) {
+                if (error instanceof org.jenkinsci.plugins.workflow.steps.FlowInterruptedException) {
+                    echo "User chose not to proceed. Ending pipeline successfully."
+                    currentBuild.result = 'SUCCESS'
+                    return
+                } else {
+                    throw e
+                }
+            }
 
             try{
                 ansible_main_vault = utils.findMainVault()
@@ -280,121 +306,114 @@ def main() {
         currentBuild.result = 'SUCCESS'
         return
     }
-
-    stage('Create jira ticket for expiring certificates') {
-            message = "Creating Jira Production Change ticket for \${project} - \${pdc}\${vdc ? ' ' + vdc : ''}"
-            echo message
-            try{
-                def newIssue = [id: "3833765",fields: [
-                    project: [id: jiraTicketValues.project],
-                    issuetype: [id: jiraTicketValues.issuetype],
-                    summary: "[DCO] SSL Certificate Renewal | \${project} | \${pdc} | \${vdc}",
-                    description: EXPIRINNG_CERTS_LIST,
-                    customfield_17990: "\${vdc}",
-                    customfield_17991: [ id: jiraTicketValues.changeType],
-                    customfield_17994: jiraTicketValues.affectedProduct,
-                    components: [[ id: jiraTicketValues.components]],
-                    priority: [ id: jiraTicketValues.priority ],
-                    customfield_24590: [ id: jiraTicketValues.downtimeFiveMinutes],
-                    customfield_10180: jiraTicketValues.tag,
-                    customfield_24991: "\${vdc}",
-                    customfield_24992: getPlayboyName(project),
-                    customfield_22690: [id: jiraTicketValues.approvedByOperations],
-                    customfield_22691: [id: jiraTicketValues.approvedByQA],
-                    customfield_22692: [id: jiraTicketValues.approvedByDCOManagementEMEA],
-                    customfield_22694: [id: jiraTicketValues.approvedBySupport],
-                    customfield_22695: [id: jiraTicketValues.approvedByTAM],
-                    customfield_24207: [id: jiraTicketValues.approvedBySecurityTeam],
-                    customfield_24993: "-e extra-vars=true"
-                ]]
-            response = jiraNewIssue issue: newIssue
-            echo response.successful.toString()
-            echo response.data.toString()
-            }catch(error){
-                echo "Error creating new ticket: \${error}"
-                currentBuild.result = 'FAILURE'
-            }
+    if(!ticketExists){
+        stage('Create jira ticket for expiring certificates') {
+                message = "Creating Jira Production Change ticket for \${project} - \${pdc}\${vdc ? ' ' + vdc : ''}"
+                echo message
+                try{
+                    def newIssue = [id: "3833765",fields: [
+                        project: [id: jiraTicketValues.project],
+                        issuetype: [id: jiraTicketValues.issuetype],
+                        summary: "[DCO] SSL Certificate Renewal | \${project} | \${pdc} | \${vdc}",
+                        description: EXPIRINNG_CERTS_LIST,
+                        customfield_17990: "\${vdc}",
+                        customfield_17991: [ id: jiraTicketValues.changeType],
+                        customfield_17994: jiraTicketValues.affectedProduct,
+                        components: [[ id: jiraTicketValues.components]],
+                        priority: [ id: jiraTicketValues.priority ],
+                        customfield_24590: [ id: jiraTicketValues.downtimeFiveMinutes],
+                        customfield_10180: jiraTicketValues.tag,
+                        customfield_24991: "\${vdc}",
+                        customfield_24992: "",
+                        customfield_22690: [id: jiraTicketValues.approvedByOperations],
+                        customfield_22691: [id: jiraTicketValues.approvedByQA],
+                        customfield_22692: [id: jiraTicketValues.approvedByDCOManagementEMEA],
+                        customfield_22694: [id: jiraTicketValues.approvedBySupport],
+                        customfield_22695: [id: jiraTicketValues.approvedByTAM],
+                        customfield_24207: [id: jiraTicketValues.approvedBySecurityTeam],
+                        customfield_24993: "-e extra-vars=true"
+                    ]]
+                response = jiraNewIssue issue: newIssue
+                echo response.successful.toString()
+                echo response.data.toString()
+                }catch(error){
+                    echo "Error creating new ticket: \${error}"
+                    currentBuild.result = 'FAILURE'
+                }
+        }
+        currentBuild.result = 'SUCCESS'
+        return
     }
+
 }
 
 def createPR() {
-
-    stage('Submit PRs') {
-        try {
-            // Download SRE PR submission scripts
-            checkout([
-                \$class: 'GitSCM',
-                branches: [[name: '*/master']],
-                extensions: [
-                    [
-                        \$class: 'CloneOption',
-                        depth: 1,
-                        noTags: true,
-                        reference: '',
-                        shallow: true
+    if(doCreatePR){
+        stage('Submit PRs') {
+            try {
+                // Download SRE PR submission scripts
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/master']],
+                    extensions: [
+                        [
+                            $class: 'CloneOption',
+                            depth: 1,
+                            noTags: true,
+                            reference: '',
+                            shallow: true
+                        ],
+                        [
+                            $class: 'RelativeTargetDirectory',
+                            relativeTargetDir: 'sre_tools'
+                        ]
                     ],
-                    [
-                        \$class: 'RelativeTargetDirectory',
-                        relativeTargetDir: 'sre_tools'
+                    userRemoteConfigs: [
+                        [
+                            credentialsId: 'dco-deployer',
+                            url: "ssh://git@git.acronis.com:7989/dco/sre-jenkins.git"
+                        ]
                     ]
-                ],
-                userRemoteConfigs: [
-                    [
-                        credentialsId: 'dco-deployer',
-                        url: "ssh://git@git.acronis.com:7989/dco/sre-jenkins.git"
-                    ]
-                ]
-            ])
-            // Loop over PR submission list
-            PR_LIST.each {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: it['pr_account'],
-                        usernameVariable: 'JIRA_USER',
-                        passwordVariable: 'JIRA_PASSWORD'),
-                    string(
-                        credentialsId: 'sa_cp_dco_auto_zta_token',
-                        variable: 'ZTA_TOKEN')
-                ]) {
-                    sshagent(credentials: [it['sshagent_credential']]){
-                        sh """
-                            cd \${WORKSPACE}/\${it['pr_repo']}
-                            echo "Test execution" > files/test-ssl-key.txt
-                            git config user.name "Jenkins Automated"
-                            git config user.email "team-dco-sre@acronis.com"
-                            git remote set-url origin ssh://git@git.acronis.com:7989/~\$JIRA_USER/\${it['pr_repo']}.git
-                            git checkout hotfix/\${JOB_NAME}-\${BUILD_NUMBER} 2>/dev/null || git checkout -b hotfix/\${JOB_NAME}-\${BUILD_NUMBER}
-                            git branch -u origin/master
-                            git add \${it['pr_files']} 2>/dev/null
-                            git diff-index --quiet HEAD || git commit -a -m "\${TICKET_KEY}" -m "\${it['pr_message']}" -m "dc: \${dc}" -m "URL: \${BUILD_URL}" -m "#NO-REF-ISSUE"
-                            git fetch
-                            git pull
-                            git push --set-upstream origin hotfix/\${JOB_NAME}-\${BUILD_NUMBER}
-                        """
-                    }
-                    def submitpr = sh ( returnStdout:true,
-                                        script: """
-                                        cd \${WORKSPACE}
-                                        python3 -u sre_tools/scripts/bitbucket_pr.py \
-                                            -r \${it['pr_repo']} \
-                                            -s hotfix/\${JOB_NAME}-\${BUILD_NUMBER} \
-                                            -d \${it['pr_target_branch']} \
-                                            --description "\${it['pr_message']}, dc: \${dc}" \
-                                            --reviewers \${it['pr_reviewers']} \
-                                            --project \${it['pr_project']}
-                                        """).trim()
-                    if (submitpr){
-                        println(submitpr)
-                        if (!submitpr.contains('already up-to-date')){
-                            printToConsoleAndSendMessage("A PR was created: \${submitpr} when running this job \${env.BUILD_URL}")
+                ])
+                // Loop over PR submission list
+                PR_LIST.each {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: it['pr_account'],
+                            usernameVariable: 'JIRA_USER',
+                            passwordVariable: 'JIRA_PASSWORD'),
+                        string(
+                            credentialsId: 'sa_cp_dco_auto_zta_token',
+                            variable: 'ZTA_TOKEN')
+                    ]) {
+                        sshagent(credentials: [it['sshagent_credential']]){
+                            sh """
+                                cd \${WORKSPACE}/\${it['pr_repo']}
+                                git add \${it['pr_files']} 2>/dev/null
+                                git diff-index --quiet HEAD || git commit -a -m "#\${TICKET_KEY}" -m "\${it['pr_message']}" -m "dc: \${dc}" -m "URL: \${BUILD_URL}" -m "#NO-REF-ISSUE"
+                                git fetch
+                                git pull
+                                git push --set-upstream origin hotfix/\${JOB_NAME}-\${BUILD_NUMBER}
+                            """
+                        }
+                        def submitpr = sh ( returnStdout:true,
+                                            script: """
+                                            cd \${WORKSPACE}
+                                            python3 -u sre_tools/scripts/bitbucket_pr.py                                             -r \${it['pr_repo']}                                             -s hotfix/\${JOB_NAME}-\${BUILD_NUMBER}                                             -d \${it['pr_target_branch']}                                             --description "\${it['pr_message']}, \${PDC} - \${VDC}"                                             --reviewers \${it['pr_reviewers']}                                             --project \${it['pr_project']}
+                                            """).trim()
+                        if (submitpr){
+                            println(submitpr)
+                            if (!submitpr.contains('already up-to-date')){
+                                printToConsoleAndSendMessage("A PR was created: \${submitpr} when running this job \${env.BUILD_URL}")
+                            }
                         }
                     }
                 }
+            } catch (exc) {
+                printToConsoleAndSendMessage("PR creation failed! Job: \${env.BUILD_URL}")
+                throw exc
+                currentBuild.result = 'FAILURE'
             }
-        } catch (exc) {
-            printToConsoleAndSendMessage("PR creation failed! Job: \${env.BUILD_URL}")
-            throw exc
-            currentBuild.result = 'FAILURE'
         }
     }
 }
