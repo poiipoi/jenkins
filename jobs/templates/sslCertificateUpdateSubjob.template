@@ -54,7 +54,7 @@ def String getPlayboyName(String project){
 }
 
 def extractComponents(String summary) {
-    String normalized = summary.replaceAll("\\s+", "")
+    String normalized = summary.replaceAll("\\\\s+", "")
     def pattern = /^\\[DCO\\]SSLCertificateRenewal\\|(.*?)\\|(.*?)\\|(.*?)\$/
     def matcher = (normalized =~ pattern)
 
@@ -188,7 +188,8 @@ def main() {
 
             def components = extractComponents(jiraCurrentIssue.fields.summary)
             if (components?.project && components?.pdc ){
-                echo """                Extracted Components from Jira Ticket:
+                echo """\
+                Extracted Components from Jira Ticket:
                 Project: \${components?.project?.trim()?.toLowerCase() ?: 'NULL'}
                 PDC: \${components?.pdc?.trim()?.toLowerCase() ?: 'NULL'}
                 VDC: \${components?.vdc?.trim()?.toLowerCase() ?: 'NULL'}
@@ -231,7 +232,7 @@ def main() {
                         sh """
                             cd \${WORKSPACE}/\${it['pr_repo']}
                             git init
-                            git remote add origin ssh://git@git.acronis.com:7989/~$JIRA_USER/\${it['pr_repo']}.git
+                            git remote add origin ssh://git@git.acronis.com:7989/~\$JIRA_USER/\${it['pr_repo']}.git
                             git fetch origin
                             git config user.name "Jenkins Automated"
                             git config user.email "team-dco-sre@acronis.com"
@@ -353,18 +354,18 @@ def createPR() {
             try {
                 // Download SRE PR submission scripts
                 checkout([
-                    $class: 'GitSCM',
+                    \$class: 'GitSCM',
                     branches: [[name: '*/master']],
                     extensions: [
                         [
-                            $class: 'CloneOption',
+                            \$class: 'CloneOption',
                             depth: 1,
                             noTags: true,
                             reference: '',
                             shallow: true
                         ],
                         [
-                            $class: 'RelativeTargetDirectory',
+                            \$class: 'RelativeTargetDirectory',
                             relativeTargetDir: 'sre_tools'
                         ]
                     ],
@@ -399,18 +400,24 @@ def createPR() {
                         def submitpr = sh ( returnStdout:true,
                                             script: """
                                             cd \${WORKSPACE}
-                                            python3 -u sre_tools/scripts/bitbucket_pr.py                                             -r \${it['pr_repo']}                                             -s hotfix/\${JOB_NAME}-\${BUILD_NUMBER}                                             -d \${it['pr_target_branch']}                                             --description "\${it['pr_message']}, \${PDC} - \${VDC}"                                             --reviewers \${it['pr_reviewers']}                                             --project \${it['pr_project']}
+                                        python3 -u sre_tools/scripts/bitbucket_pr.py \
+                                            -r \${it['pr_repo']} \
+                                            -s hotfix/\${JOB_NAME}-\${BUILD_NUMBER} \
+                                            -d \${it['pr_target_branch']} \
+                                            --description "\${it['pr_message']}, \${PDC} - \${VDC}" \
+                                            --reviewers \${it['pr_reviewers']} \
+                                            --project \${it['pr_project']}
                                             """).trim()
                         if (submitpr){
                             println(submitpr)
                             if (!submitpr.contains('already up-to-date')){
-                                printToConsoleAndSendMessage("A PR was created: \${submitpr} when running this job \${env.BUILD_URL}")
+                            printToConsoleAndSendMessage("A PR was created: \${submitpr} when running this job \${env.BUILD_URL}")
                             }
                         }
                     }
                 }
             } catch (exc) {
-                printToConsoleAndSendMessage("PR creation failed! Job: \${env.BUILD_URL}")
+            printToConsoleAndSendMessage("PR creation failed! Job: \${env.BUILD_URL}")
                 throw exc
                 currentBuild.result = 'FAILURE'
             }
