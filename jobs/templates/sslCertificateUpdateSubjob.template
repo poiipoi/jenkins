@@ -308,7 +308,7 @@ def main() {
             }catch(error){
                 printToConsoleAndSendMessage("Running playbook to request new certificate failed. \\nJob: \${env.BUILD_URL}")
                 env.DO_NOT_MERGE = "DO-NOT-MERGE"
-                echo "Running playbook to request new certificate failed: ${error}"
+                echo "Running playbook to request new certificate failed: \${error}"
             }
         }
     }
