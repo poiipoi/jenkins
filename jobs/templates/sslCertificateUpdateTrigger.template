@@ -1,21 +1,22 @@
 @Library('dco') import acronis.dco.*
-import static groovy.json.JsonOutput.toJson
-import acronis.dco.metrics.PushGateway
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 
+import acronis.dco.Utilities
 
 utils = new acronis.dco.Utilities(this)
 
 
+INVENTORY = 'production-deployment-environments/inventories/production/globalrouter-baas'
 dc = utils.findDCByInventory(INVENTORY)
-slave_label = utils.findDockerSlave(dc)
 deployer_id = utils.getDeployUserID(dc)
 deployer_username = utils.getDeployUserUsername(dc)
-expirinng_certs_list = readJSON text: EXPIRINNG_CERTS_LIST
-expirinng_certs_list_pretty = JsonOutput.prettyPrint(JsonOutput.toJson(expirinng_certs_list))
-doCreatePR = false
-pr_url = false
+expiring_certs = 'expiring_certs.json'
+renew_certificate = true
+BUILD_VERSION= '25.02'
+PLAYBOOK_NAME = "playbook_ssl_certificate.yml"
+EXTRA_VARS = " -e expiry_days=360 -e pdc=\${params.PDC} -e vdc=\${params.VDC} "
+
 
 def printToConsoleAndSendMessage(String message) {
     echo "\${message}"
@@ -24,500 +25,98 @@ def printToConsoleAndSendMessage(String message) {
     chat.sendMessage(message)
 }
 
+node('master') {
+    cleanWs()
 
-env.JIRA_SITE = "JIRA_PROD"
-env.JIRA_BASE_URL = "https://pmc.acronis.work/browse/"
-env.DO_NOT_MERGE = "" //FIX: If DNS contains unapproved list API will need approval; Save key tempoarily in git
+    utils.defineAbsentParameters()
 
-PR_LIST = [
-  [ "pr_account": "SA_CP_dco_auto",
-    "pr_project": "DCO",
-    "pr_repo": "production-deployment-environments",
-    "pr_target_branch": "master",
-    "pr_files": "--all",
-    "pr_reviewers": "ahmed.gheith amiklashevich",
-    "sshagent_credential": "dco-deployer",
-    "pr_message": "[Jenkins Automated] Update SSL Certificate - Build: \\\${BUILD_NUMBER}, Job: \\\${JOB_NAME}"
-  ]
-]
+    stage('Checkout') {
+        echo "preparing environment"
+        utils.checkout(BUILD_VERSION,GIT_REPO,GIT_BRANCH,GIT_CHECKOUT)
+    }
 
-node(slave_label) {
-    utils.cleanWsRun({
-        main()
-        env.slave_name = env.NODE_NAME
-        env.slave_workspace = env.WORKSPACE
-        createPR()
-        createProductionChangeTicket()
-        cleanWs()
-    })
-}
-
-
-def String getPlayboyName(String project){
-    def projectLowercase = project.toLowerCase().trim()
-    if (projectLowercase == 'kube-repo'){
-        return "playbook-kube-repo.yml"
-    }else if(projectLowercase == 'cyberdc' || projectLowercase == 'classicdc' || projectLowercase == 'testdc'){
-        return "playbook-renew-certificates.yml"
-    }else error("No playbook to renew certificate for this project type")
-}
-
-def extractComponents(String summary) {
-    String normalized = summary.replaceAll("\\\\s+", "")
-    def pattern = /^\\[DCO\\]SSLCertificateRenewal\\|(.*?)\\|(.*?)\\|(.*?)\$/
-    def matcher = (normalized =~ pattern)
-
-    if (matcher.matches()) {
-        printToConsoleAndSendMessage("Successfully extracted components from ticket summary: \${summary}")
-        return [
-            project: matcher[0][1],
-            pdc: matcher[0][2],
-            vdc: matcher[0][3]
+    stage('Run Custom Playbook') {
+        ansible_main_vault = utils.findMainVault()
+        ansible_additional_vaults = utils.prepareNonMainVaults()
+        List credentials = [
+            file(credentialsId: ansible_main_vault, variable: 'ANSIBLE_VAULT_PASSWORD_FILE'),
+            string(credentialsId: 'sado_jenkins_zta_token', variable: 'ZTA_TOKEN'),
         ]
-    } else {
-        printToConsoleAndSendMessage("Failed to extract components from summary: '\${summary}' - This ticket was not created by automation [Skipping]")
-    }
-}
+        withCredentials(credentials) {
+            ansiColor('xterm') {
+                def ansible_status
+                String ansibleCmd = "ansible-playbook \${PLAYBOOK_NAME}  \${EXTRA_VARS}"
 
-def boolean checkTicketApproval(ticket){
-    if(ticket.fields.customfield_22690.value.toLowerCase().trim() == 'approved'){
-        return true
-    }else{
-        return false
-    }
-}
-
-def checkIssueStatus(ticket){
-    return ticket.fields.status.name.toLowerCase().trim()
-}
-
-def getTicketKey(ticket){
-    return ticket.key
-}
-
-def getIssueLinks(ticket){
-    echo "Checking if issue is linked..."
-    def links = ticket.fields.issuelinks
-
-    if (links == null || links.isEmpty()) {
-        return null
-    }
-    return ticket.fields.issuelinks
-}
-
-def boolean ticketAlreadyExists(ticketDetails, String project, String pdc, String vdc) {
-    if (!ticketDetails) {
-        return false
-    }
-
-    boolean isKubeRepoCase = ticketDetails.project && ticketDetails.pdc &&
-                            ticketDetails.project.toLowerCase() == 'kube-repo' &&
-                            ticketDetails.pdc.toLowerCase() == pdc.toLowerCase()
-
-    boolean isFullMatchCase = ticketDetails.project && ticketDetails.pdc && ticketDetails.vdc &&
-                            ticketDetails.project.toLowerCase() == project.toLowerCase() &&
-                            ticketDetails.pdc.toLowerCase() == pdc.toLowerCase() &&
-                            ticketDetails.vdc.toLowerCase() == vdc.toLowerCase()
-
-    switch (true) {
-        case isKubeRepoCase:
-            return true
-        case isFullMatchCase:
-            return true
-        default:
-            return false
-    }
-}
-
-def commentIssue(issueKey, commentBody) {
-    def comment = [ body: commentBody ]
-    jiraAddComment idOrKey: issueKey, input: comment
-}
-
-def linkIssues(childIssueKey, parentIssueKey, String linkType='Causes'){
-    echo "Linking isseus..."
-    response = jiraLinkIssues failOnError: false, inwardKey: parentIssueKey , outwardKey: childIssueKey , type: linkType
-}
-
-def transitionIssue(issueKey, transitionID) {
-    def transitionInput = [ transition: [ id: transitionID ] ]
-    jiraTransitionIssue idOrKey: issueKey, input: transitionInput
-}
-
-
-
-def main() {
-    def ticketExists = false
-    def project = expirinng_certs_list.project
-    def pdc = expirinng_certs_list.pdc
-    def vdc = expirinng_certs_list?.vdc
-    def existingTicket
-    def operationsApproval = false
-    def isIssueLinked = false
-    def isIssuePending = false
-    def ticketKey
-    def jiraSearchQuery = 'type = "Production Change" and Tag =  CI-AUTOMATION and Tag = SSL-CERTIFICATE-RENEWAL AND status not in (CLOSED,RESOLVED, REJECTED)'
-
-
-
-
-    env.slave_name = env.NODE_NAME
-    env.slave_workspace = env.WORKSPACE
-    currentBuild.displayName = "#\${BUILD_ID}: \${expirinng_certs_list.pdc}:\${expirinng_certs_list?.vdc}"
-
-    Map s = [:]
-    try {
-        s = (['dco', 'qa'].contains(env.JENKINS_RUNNING_ENV) && params.SHARED_MSP_SCM_DIRS) ?
-            readJSON(text: params.SHARED_MSP_SCM_DIRS, returnPojo: true) :
-            [:]
-    } catch (Exception ex) {
-        println ex.toString()
-    }
-
-    stage('Check Trigger') {
-        utils.checkTrigger()
-    }
-
-    stage('Print job info') {
-        print "Master Workspace: " + env.MASTER_WORKSPACE
-        print "Inventory: " + INVENTORY
-        print "Build version: " + BUILD_VERSION
-        print "Playbook name: " + PLAYBOOK_NAME
-        print "Ansible options: " + ANSIBLE_OPTIONS
-        print "EXPIRINNG_CERTS_LIST: " + EXPIRINNG_CERTS_LIST
-        print "s: " + s
-    }
-
-    stage('Init') {
-        utils.syncLocally()
-    }
-
-    stage('Sync Workspace') {
-        if (s && s.containsKey(NODE_NAME) && s[NODE_NAME] && fileExists(s[NODE_NAME])) {
-            sh "rsync -a --delete --force \${s[NODE_NAME]}/ \${WORKSPACE}/ "
-        } else {
-            sshagent([deployer_id]) {
-                utils.syncSlaveWorkspaceEx(dc, deployer_id)
-            }
-        }
-    }
-
-    stage('Search jira tickets') {
-        jiraSearchResult = jiraJqlSearch jql: jiraSearchQuery
-        jiraSearchResult.data.issues.any { jiraCurrentIssue ->
-            def components = extractComponents(jiraCurrentIssue.fields.summary)
-            if (components?.project && components?.pdc ){
-                echo """                Extracted Components from Jira Ticket:
-                Project: \${components?.project?.trim()?.toLowerCase() ?: 'NULL'}
-                PDC: \${components?.pdc?.trim()?.toLowerCase() ?: 'NULL'}
-                VDC: \${components?.vdc?.trim()?.toLowerCase() ?: 'NULL'}
-                """.stripIndent()
-            }
-
-            try{
-                if(ticketAlreadyExists(components, project, pdc, vdc)){
-                    printToConsoleAndSendMessage("Ticket to renew certificate already exists for \${project} - \${pdc}\${vdc ? ' ' + vdc : ''}")
-                    existingTicket = jiraCurrentIssue
-                    ticketExists = true
-                    operationsApproval = checkTicketApproval(jiraCurrentIssue)
-                    isIssueLinked = getIssueLinks(jiraCurrentIssue) ? true : false
-                    isIssuePending = checkIssueStatus(jiraCurrentIssue) == 'pending'
-                    echo "Is issue pending? \${isIssuePending}"
-                    echo "Is issue linked? \${isIssueLinked}"
-                    ticketKey = getTicketKey(jiraCurrentIssue)
-                    env.TICKET_KEY = ticketKey
-                    env.PDC = pdc
-                    env.VDC = vdc
-                    env.PROJECT = project
-                }
-            }catch(error){
-                echo "Error verifying if ticket already exists: \${error}"
-                currentBuild.result = 'FAILURE'
-            }
-        }
-    }
-
-    // Check if production change ticket exists and approval by operations is true 
-    if(ticketExists && operationsApproval){      
-        if(isIssueLinked || isIssuePending  ){
-            printToConsoleAndSendMessage("Skipping digicert API request step (suspected duplicate) -Check and verify PR has been merged. Set status to Open or delete linked issues if this is a false positve  \\nJob: \${env.BUILD_URL}\\nIssue-URL: \${env.JIRA_BASE_URL}\${env.TICKET_KEY}")
-            return
-        }
-        doCreatePR = true
-        stage('Prepare git environment'){
-            PR_LIST.each {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: it['pr_account'],
-                        usernameVariable: 'JIRA_USER',
-                        passwordVariable: 'JIRA_PASSWORD'),
-                    string(
-                        credentialsId: 'sa_cp_dco_auto_zta_token',
-                        variable: 'ZTA_TOKEN')
-                ]) {
-                    sshagent(credentials: [it['sshagent_credential']]){
-                        sh """
-                            cd \${WORKSPACE}/\${it['pr_repo']}
-                            git init
-                            git remote add origin ssh://git@git.acronis.com:7989/~\$JIRA_USER/\${it['pr_repo']}.git
-                            git fetch origin
-                            git config user.name "Jenkins Automated"
-                            git config user.email "team-dco-sre@acronis.com"
-                            git checkout -f -b hotfix/\${JOB_NAME}-\${BUILD_NUMBER} origin/master || git checkout hotfix/\${JOB_NAME}-\${BUILD_NUMBER} 2>/dev/null
-                            git status
+                 utils.callInDocker({
+                    sshagent([deployer_id]) {
+                        ansible_status = sh returnStatus: true, script: """
+                            export ANSIBLE_FORCE_COLOR=true
+                            \${ansibleCmd}
                         """
                     }
+                })
+                if(ansible_status != 0) {
+                    def log_helper = new acronis.dco.LogHelper(this)
+                    if (log_helper.getBuildLastNLines(120).join(' ').contains('ERROR! Specified hosts and/or --limit does not match any hosts')) {
+                        currentBuild.result = 'SUCCESS'
+                    } else {
+                        currentBuild.result = 'FAILURE'
+                    }
                 }
             }
         }
-        stage('Generate certificate upon approval from operations'){
-            printToConsoleAndSendMessage("Requesting certificate renewal through Digicert API \\nJob: \${env.BUILD_URL}\\nIssue-URL:\${env.JIRA_BASE_URL}\${env.TICKET_KEY}")
+    }
+    stage('Trigger subjob for expiring certs'){
+        script{
+            if (fileExists(expiring_certs)) {
+                echo "Expiring certs exists, continuing pipeline."
+            }else{
+                echo "No expiring certs. Ending pipeline with success."
+                currentBuild.result = 'SUCCESS'
+                return
+            }
             try{
-                ansible_main_vault = utils.findMainVault()
-                ansible_additional_vaults = utils.prepareNonMainVaults()
-                List credentials = [
-                    file(credentialsId: ansible_main_vault, variable: 'ANSIBLE_VAULT_PASSWORD_FILE'),
-                    string(credentialsId: 'sado_jenkins_zta_token', variable: 'ZTA_TOKEN'),
-                ]
-                withCredentials(credentials) {
-                    ansiColor('xterm') {
-                        def ansible_status
-                        String ansibleCmd = "ansible-playbook \${PLAYBOOK_NAME}  " +
-                                " \${ANSIBLE_OPTIONS}"
+                def expiring_certs_file = readFile(expiring_certs).trim()
+                def expiring_certs_list = readJSON text: expiring_certs_file
+                def expiring_certs_list_pretty = JsonOutput.prettyPrint(JsonOutput.toJson(expiring_certs_list))
+                if (!(expiring_certs_list instanceof List)){
+                     error("The expiring_certs_list does not contain an array")
+                }
 
-                        utils.callInDocker({
-                            sshagent([deployer_id]) {
-                                ansible_status = sh returnStatus: true, script: """
-                                    export ANSIBLE_FORCE_COLOR=true
-                                    \${ansibleCmd}
-                                """
-                            }
-                        })
+                if (expiring_certs_list.size() < 1){
+                    printToConsoleAndSendMessage("SSL Certificate Expiration Scan complete: No certificates approaching expiration [default threshold: 21 days].")
+                }else{
+                    echo "\${expiring_certs_list_pretty}"
+                    printToConsoleAndSendMessage("\\nSSL Certificate Expiration Scan complete: \${expiring_certs_list.size()} certificate(s) approaching expiration")
+                    expiring_certs_list.eachWithIndex{ item, index ->
+                        def firstItem = (item?.ssl_check_output && item?.ssl_check_output.size() > 0) ? item?.ssl_check_output[0] : null
+                        printToConsoleAndSendMessage("\\nExpiring Certificate \${index + 1} of \${expiring_certs_list.size()}:\\nPDC: \${item.pdc} \\nVDC:\${item?.vdc} \\nEnddate: \${firstItem} \\nJob: \${env.BUILD_URL}")
+                    }
 
-                        if(fileExists("job_artifacts")) {
-                            archiveArtifacts artifacts: "job_artifacts/**", allowEmptyArchive: true
-                        }
-                        if(ansible_status != 0) {
-                            currentBuild.result = 'FAILURE'
-                        }else{
-                            printToConsoleAndSendMessage("\\n Request sent successfullt, Transitioning ticket to PENDING status")
-                            transitionIssue(env.TICKET_KEY, '281')
+                    expiring_certs_list.each { item ->
+                        try{
+                            printToConsoleAndSendMessage( "Starting subjob to renew ssl certificate for \${item.project} in \${item.pdc} - \${item?.vdc}")
+                            build(job: "ssl_certificate_update_subjob",
+                                    parameters: [
+                                            string(name: 'INVENTORY', value: INVENTORY),
+                                            string(name: 'BUILD_VERSION', value: BUILD_VERSION),
+                                            string(name: 'MASTER_WORKSPACE', value: "\${WORKSPACE}"),
+                                            string(name: 'PLAYBOOK_NAME', value: PLAYBOOK_NAME),
+                                            string(name: 'EXPIRINNG_CERTS_LIST', value: JsonOutput.toJson(item)),
+                                            string(name: 'ANSIBLE_OPTIONS', value: " -e project=\${item.project} -e pdc=\${item.pdc} -e vdc=\${item.vdc} -e check_cert_expiry=\${false} -e renew_certificate=\${renew_certificate} -e dco_environment=production ")
+                                    ]
+                            )
+
+                        }catch(error){
+                            printToConsoleAndSendMessage("subjob failed for \${item.pdc}-\${item.vdc} in \${item.project}: \${error}")
+                            error(error)
                         }
                     }
                 }
-            }catch(error){
-                printToConsoleAndSendMessage("Running playbook to request new certificate failed. \\nJob: \${env.BUILD_URL}")
-                env.DO_NOT_MERGE = "DO-NOT-MERGE"
-                echo "Running playbook to request new certificate failed: ${error}"
-            }
-        }
-    }
-
-    // Ticket to request digicert cert created but pending opperations approval 
-    if (ticketExists) {
-        currentBuild.result = 'SUCCESS'
-        commentIssue(env.TICKET_KEY, "Remider: Carefully examine the list of FQDNs provided below then Set Approve by Operations field to Approve.")
-        printToConsoleAndSendMessage("Remider: Carefully examine the list of FQDNs provided below then Set Approve by Operations field to Approve. \\nJob: \${env.BUILD_URL}\\nIssue-URL: \${env.JIRA_BASE_URL}\${env.TICKET_KEY}")
-        return
-    }
-
-    if(!ticketExists){
-        stage('Create jira ticket for expiring certificates') {
-                message = "Creating Jira Production Change ticket for \${project} - \${pdc}\${vdc ? ' ' + vdc : ''}\\nJob: \${env.BUILD_URL}"
-                printToConsoleAndSendMessage(message)
-                try{
-                    def newIssue = [id: "3833765",fields: [
-                        project: [id: "17921"],
-                        issuetype: [id: "10301"],
-                        summary: "[DCO] SSL Certificate Renewal | \${project} | \${pdc} | \${vdc}",
-                        description: "*Purpose:* Obtain approval for the requesting new DigiCert certificates to replace expiring SSL Certificates on our Data Centers (DCs)\n\n*Action Required:*\\n# Carefully examine the list of FQDNs provided below.\\n# Set \\"Approve by Operations\\" field to \\"Approve\\" .\\n\\n{color:#FF0000}*IMPORTANT:* Do *not* set the status to \"To-Build\"{color}.\\n\\n{code}\\n\${expirinng_certs_list_pretty}\\n{code} \\n\\n See documetaion page below for more information \\n https://adn.acronis.work/display/DCO/Semi-Automated+Certificate+Replacement+Process",
-                        customfield_17990: "\${vdc}",
-                        customfield_17991: [ id: "23351"],
-                        customfield_17994: "Acronis Cyber Cloud (ACC)",
-                        components: [[ id: "37162"]],
-                        priority: [ id: "6" ],
-                        customfield_24590: [ id: "29874"],
-                        customfield_10180: ["CI-AUTOMATION","SSL-CERTIFICATE-RENEWAL"],
-                        customfield_24992: "",
-                        customfield_22690: [id: "28152"],
-                        customfield_22691: [id: "28175"],
-                        customfield_22692: [id: "28171"],
-                        customfield_22694: [id: "28173"],
-                        customfield_22695: [id: "28172"],
-                        customfield_24207: [id: "29532"]
-                    ]]
-                response = jiraNewIssue issue: newIssue
-                echo response.successful.toString()
-                echo response.data.toString()
-                printToConsoleAndSendMessage("\\n New ticket created \\n\${env.JIRA_BASE_URL}\${response.data.key}")
-                }catch(error){
-                    echo "Error creating new ticket: \${error}"
-                    printToConsoleAndSendMessage("Error creating new ticket \\nJob: \${env.BUILD_URL}")
-                    currentBuild.result = 'FAILURE'
-                }
-        }
-        currentBuild.result = 'SUCCESS'
-        return
-    }
-
-}
-
-def createPR() {
-    if(doCreatePR){
-        stage('Submit PRs') {
-            try {
-                // Download SRE PR submission scripts
-                checkout([
-                    \$class: 'GitSCM',
-                    branches: [[name: '*/master']],
-                    extensions: [
-                        [
-                            \$class: 'CloneOption',
-                            depth: 1,
-                            noTags: true,
-                            reference: '',
-                            shallow: true
-                        ],
-                        [
-                            \$class: 'RelativeTargetDirectory',
-                            relativeTargetDir: 'sre_tools'
-                        ]
-                    ],
-                    userRemoteConfigs: [
-                        [
-                            credentialsId: 'dco-deployer',
-                            url: "ssh://git@git.acronis.com:7989/dco/sre-jenkins.git"
-                        ]
-                    ]
-                ])
-                // Loop over PR submission list
-                PR_LIST.each {
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: it['pr_account'],
-                            usernameVariable: 'JIRA_USER',
-                            passwordVariable: 'JIRA_PASSWORD'),
-                        string(
-                            credentialsId: 'sa_cp_dco_auto_zta_token',
-                            variable: 'ZTA_TOKEN')
-                    ]) {
-                        sshagent(credentials: [it['sshagent_credential']]){
-                            sh """
-                                cd \${WORKSPACE}/\${it['pr_repo']}
-                                git add \${it['pr_files']} 2>/dev/null
-                                git diff-index --quiet HEAD || git commit -a -m "\${env.DO_NOT_MERGE} #\${env.TICKET_KEY}" -m "\${it['pr_message']}" -m "dc: \${dc}" -m "URL: \${BUILD_URL}" -m "#NO-REF-ISSUE"
-                                git fetch
-                                git pull
-                                git push --set-upstream origin hotfix/\${JOB_NAME}-\${BUILD_NUMBER}
-                            """
-                        }
-                        def submitpr = sh ( returnStdout:true,
-                                            script: """
-                                            cd \${WORKSPACE}
-                                        python3 -u sre_tools/scripts/bitbucket_pr.py                                             -r \${it['pr_repo']}                                             -s hotfix/\${JOB_NAME}-\${BUILD_NUMBER}                                             -d \${it['pr_target_branch']}                                             --description "\${it['pr_message']}, \${PDC} - \${VDC}"                                             --reviewers \${it['pr_reviewers']}                                             --project \${it['pr_project']}
-                                            """).trim()
-                        if (submitpr){
-                            println(submitpr)
-                            if (!submitpr.contains('already up-to-date')){
-                            pr_url = submitpr
-                            printToConsoleAndSendMessage("A PR was created: \${submitpr} when running this job \\nPR-URL:\${pr_url} \\nJob:\${env.BUILD_URL} \\nIssue-URL: \${env.JIRA_BASE_URL}\${env.TICKET_KEY}")
-                            }
-                        }
-                    }
-                }
-            } catch (exc) {
-                printToConsoleAndSendMessage("PR creation failed! Job: \${env.BUILD_URL}")
-                throw exc
-                currentBuild.result = 'FAILURE'
-            }
-        }
-    }
-}
-
-def createProductionChangeTicket(){
-    // check if PR was created and get PR URL 
-    if(doCreatePR && pr_url ){
-        stage("Create Jira tickets"){
-                printToConsoleAndSendMessage("Creating Production change ticket to renew FW certs for \${pdc} - \${vdc}")
-                try{
-                    def newIssue = [id: "3833765",fields: [
-                        project: [id: "17921"],
-                        issuetype: [id: "10301"],
-                        summary: "[DCO] SSL Certificate Update | \${env.PROJECT} | \${pdc} | \${vdc}",
-                        description: "*Purpose:* Replace expiring FW SSL Certificates on our Data Centers (DCs) using ansible playbooks\\n\\n*Action Required:*\\n# Check if the PR has been merged.\\n# Verify ansible fileds has correct values  .\\n\\n{color:#FF0000}*IMPORTANT:* Do *not* set the status to \"To-Build\" if PR has not been merged.{color} \\n\\n PR-Link: \${pr_url}\\n\\n{code}\\n\${expirinng_certs_list_pretty}\\n{code} \\n\\n See documetaion page below for more information \\n https://adn.acronis.work/display/DCO/Semi-Automated+Certificate+Replacement+Process",
-                        customfield_17990: "\${vdc}",
-                        customfield_17991: [ id: "23351"],
-                        customfield_17994: "Acronis Cyber Cloud (ACC)",
-                        components: [[ id: "37162"]],
-                        priority: [ id: "6" ],
-                        customfield_24590: [ id: "29874"],
-                        customfield_10180: ["CI-AUTOMATION","SSL-CERTIFICATE-DEPLOYMENT"],
-                        customfield_24991: "\${vdc}",
-                        customfield_24992: "playbook-renew-certificates.yml",
-                        customfield_22690: [id: "28152"],
-                        customfield_22691: [id: "28175"],
-                        customfield_22692: [id: "28171"],
-                        customfield_22694: [id: "28173"],
-                        customfield_22695: [id: "28172"],
-                        customfield_24207: [id: "29532"]
-                    ]]
-                response = jiraNewIssue issue: newIssue
-                echo response.successful.toString()
-                echo response.data.toString()
-                printToConsoleAndSendMessage("\\n New Production Change ticket created to update certificate \\n\${env.JIRA_BASE_URL}\${response.data.key}")
-                commentIssue(env.TICKET_KEY, "New Production Change ticket created to update certificate \\n\${env.JIRA_BASE_URL}\${response.data.key}")
-                env.FW_ISSUE_KEY = response.data.key
-                }catch(error){
-                    printToConsoleAndSendMessage("Error creating production change ticket for \${pdc} - \${vdc}")
-                    echo "Error creating new ticket: \${error}"
-                    currentBuild.result = 'FAILURE'
-                }
-
-                printToConsoleAndSendMessage("Creating Production change ticket to renew Kube-repo certs for \${pdc}")
-                try{
-                    def newIssue = [id: "3833765",fields: [
-                        project: [id: "17921"],
-                        issuetype: [id: "10301"],
-                        summary: "[DCO] SSL Certificate Update | \${env.PROJECT} | \${pdc} | \${vdc}",
-                        description: "*Purpose:* Replace expiring Kuberepo SSL Certificates on our Data Centers (DCs) using ansible playbooks\\n\\n*Action Required:*\\n# Check if the PR has been merged.\\n# Verify ansible fileds has correct values  .\\n\\n{color:#FF0000}*IMPORTANT:* Do *not* set the status to \"To-Build\" if PR has not been merged.{color} \\n\\n PR-Link: \${pr_url}\\n\\n{code}\\n\${expirinng_certs_list_pretty}\\n{code} \\n\\n See documetaion page below for more information \\n https://adn.acronis.work/display/DCO/Semi-Automated+Certificate+Replacement+Process",
-                        customfield_17990: "\${vdc}",
-                        customfield_17991: [ id: "23351"],
-                        customfield_17994: "Acronis Cyber Cloud (ACC)",
-                        components: [[ id: "37162"]],
-                        priority: [ id: "6" ],
-                        customfield_24590: [ id: "29874"],
-                        customfield_10180: ["CI-AUTOMATION","SSL-CERTIFICATE-DEPLOYMENT"],
-                        customfield_24991: "\${vdc}",
-                        customfield_24992: "playbook-kube-repo.yml",
-                        customfield_24993: "-i production-deployment-environments/inventories/infrastructure/\${pdc}-abc-infra -l kube-repo ",
-                        customfield_22690: [id: "28152"],
-                        customfield_22691: [id: "28175"],
-                        customfield_22692: [id: "28171"],
-                        customfield_22694: [id: "28173"],
-                        customfield_22695: [id: "28172"],
-                        customfield_24207: [id: "29532"]
-                    ]]
-                response = jiraNewIssue issue: newIssue
-                echo response.successful.toString()
-                echo response.data.toString()
-                printToConsoleAndSendMessage("\\n New Production Change ticket created to update certificate \\n\${env.JIRA_BASE_URL}\${response.data.key}")
-                commentIssue(env.TICKET_KEY, "New Production Change ticket created to update certificate \\n\${env.JIRA_BASE_URL}\${response.data.key}")
-                env.KUBEREPO_ISSUE_KEY = response.data.key
-                }catch(error){
-                    printToConsoleAndSendMessage("Error creating production change ticket for \${pdc} - \${vdc}")
-                    echo "Error creating new ticket: \${error}"
-                    currentBuild.result = 'FAILURE'
-                }
-        }
-        stage("Link Jira issues to parent issue"){
-            if(env.FW_ISSUE_KEY){
-                echo "Linking FW issue - \${FW_ISSUE_KEY} to parent ticket - \${env.TICKET_KEY} "
-                linkIssues(FW_ISSUE_KEY, env.TICKET_KEY)
-            }
-
-            if(env.KUBEREPO_ISSUE_KEY){
-                echo "Linking KubeRepo issue - \${KUBEREPO_ISSUE_KEY} to parent ticket - \${env.TICKET_KEY}"
-                linkIssues(KUBEREPO_ISSUE_KEY, env.TICKET_KEY)
+            }catch (error){
+                printToConsoleAndSendMessage("Error starting subjob to renew ssl certificate for \${item.project} in \${item.pdc} - \${item?.vdc}")
+                echo "Error in stage: Trigger subjob for expiring certs"
+                error("\${error}")
             }
         }
     }
