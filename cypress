@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab-e2e-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab-e2e
+  template:
+    metadata:
+      labels:
+        app: gitlab-e2e
+    spec:
+      # serviceAccountName: gitlab-e2e-sa   # optional if you need cloud creds to upload artifacts
+      containers:
+      - name: cypress-runner
+        # Official Cypress image with browsers included
+        image: cypress/included:latest
+        imagePullPolicy: IfNotPresent
+        # Run wrapper script from ConfigMap; leave pod alive after tests for debugging.
+        command: ["/bin/sh", "-c"]
+        args:
+          - chmod +x /config/run-tests.sh && /config/run-tests.sh
+        env:
+        - name: GITLAB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: gitlab-e2e-secret
+              key: GITLAB_USERNAME
+        - name: GITLAB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gitlab-e2e-secret
+              key: GITLAB_PASSWORD
+        - name: CYPRESS_baseUrl
+          valueFrom:
+            configMapKeyRef:
+              name: gitlab-e2e-config
+              key: env-config.json
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: results
+          mountPath: /results
+        - name: cypress-cache
+          mountPath: /root/.cache
+        # Give more CPU/memory for browser runs if needed
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+      restartPolicy: Always
+      volumes:
+      - name: config
+        configMap:
+          name: gitlab-e2e-config
+          defaultMode: 0755
+      - name: results
+        persistentVolumeClaim:
+          claimName: gitlab-e2e-results-pvc
+      - name: cypress-cache
+        emptyDir: {}
