@@ -93,11 +93,11 @@ node('master') {
                     printToConsoleAndSendMessage("SSL Certificate Expiration Scan complete: No certificates approaching expiration [default threshold: 21 days].")
                 }else{
                     echo "\${expiring_certs_list_pretty}"
-                    printToConsoleAndSendMessage("\nSSL Certificate Expiration Scan complete: \${expiring_certs_list.size()} certificate(s) approaching expiration")
+                    printToConsoleAndSendMessage("\\nSSL Certificate Expiration Scan complete: \${expiring_certs_list.size()} certificate(s) approaching expiration")
                     expiring_certs_list.eachWithIndex{ item, index ->
                         def firstItem = (item?.ssl_check_output && item?.ssl_check_output.size() > 0) ? item?.ssl_check_output[0] : null
                         sleep(5)
-                        printToConsoleAndSendMessage("\nExpiring Certificate \${index + 1} of \${expiring_certs_list.size()}:\nPDC: \${item.pdc} \nVDC:\${item?.vdc} \nEnddate: \${firstItem} \nJob: \${env.BUILD_URL}")
+                        printToConsoleAndSendMessage("\\nExpiring Certificate \${index + 1} of \${expiring_certs_list.size()}:\\nPDC: \${item.pdc} \\nVDC:\${item?.vdc} \\nEnddate: \${firstItem} \\nJob: \${env.BUILD_URL}")
                     }
 
                     expiring_certs_list.each { item ->
