@@ -61,7 +61,7 @@ def extractComponents(String summary) {
     def matcher = (normalized =~ pattern)
 
     if (matcher.matches()) {
-        echo "Successfully extracted components from ticket summary: ${summary}"
+        echo "Successfully extracted components from ticket summary: \${summary}"
         return [
             project: matcher[0][1],
             pdc: matcher[0][2],
@@ -325,7 +325,6 @@ def main() {
                     def newIssue = [id: "3833765",fields: [
                         project: [id: "17921"],
                         issuetype: [id: "10301"],
-                        // if vdc is null, set vdc value = "N/A" to avoid jira summary issues
                         summary: "[DCO] SSL Certificate Renewal | \${project} | \${pdc} | \${vdc ? vdc : 'N/A'}",
                         description: "*Purpose:* Obtain approval for the requesting new DigiCert certificates to replace expiring SSL Certificates on our Data Centers (DCs)\\n\\n*Action Required:*\\n# Carefully examine the list of FQDNs provided below.\\n# Set \"Approve by Operations\" field to \"Approve\" .\\n\\n{color:#FF0000}*IMPORTANT:* Do *not* set the status to \"To-Build\"{color}.\\n\\n{code}\\n\${expirinng_certs_list_pretty}\\n{code} \\n\\n See documetaion page below for more information \\n https://adn.acronis.work/display/DCO/Semi-Automated+Certificate+Replacement+Process",
                         customfield_17990: "\${vdc}",
