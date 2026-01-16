@@ -13,14 +13,14 @@ deployer_id = utils.getDeployUserID(dc)
 deployer_username = utils.getDeployUserUsername(dc)
 expiring_certs = 'expiring_certs.json'
 renew_certificate = true
-BUILD_VERSION= '25.02'
+BUILD_VERSION= '25.10'
 PLAYBOOK_NAME = "playbook_ssl_certificate.yml"
-EXTRA_VARS = " -e expiry_days=360 -e pdc=\${params.PDC} -e vdc=\${params.VDC} "
+EXTRA_VARS = " -e expiry_days=21 -e pdc=\${params.PDC} -e vdc=\${params.VDC} "
 
 
 def printToConsoleAndSendMessage(String message) {
     echo "\${message}"
-    // Sends message to Teams channel "Ansible notifcations" team name "Datacenter Operations"
+    // Sends message to Teams channel "SSL Certificate Notification" team name "Datacenter Operations"
     ChatHelper chat = new ChatHelper(this, [channel: "19:4a74c47277c34867873a83e723cdfe42@thread.tacv2"])
     chat.sendMessage(message)
 }
@@ -38,6 +38,8 @@ node('master') {
     stage('Run Custom Playbook') {
         ansible_main_vault = utils.findMainVault()
         ansible_additional_vaults = utils.prepareNonMainVaults()
+        ansible_docker_image = utils.findScmImage([release: BUILD_VERSION, buildVar: 'release'])
+        echo "ansible_docker_image: \${ansible_docker_image}"
         List credentials = [
             file(credentialsId: ansible_main_vault, variable: 'ANSIBLE_VAULT_PASSWORD_FILE'),
             string(credentialsId: 'sado_jenkins_zta_token', variable: 'ZTA_TOKEN'),
@@ -47,14 +49,18 @@ node('master') {
                 def ansible_status
                 String ansibleCmd = "ansible-playbook \${PLAYBOOK_NAME}  \${EXTRA_VARS}"
 
-                 utils.callInDocker({
-                    sshagent([deployer_id]) {
-                        ansible_status = sh returnStatus: true, script: """
-                            export ANSIBLE_FORCE_COLOR=true
-                            \${ansibleCmd}
-                        """
-                    }
-                })
+                 utils.callInDocker([
+                    action:{
+                        sshagent([deployer_id]) {
+                            ansible_status = sh returnStatus: true, script: """
+                                export ANSIBLE_FORCE_COLOR=true
+                                \${ansibleCmd}
+                            """
+                        }
+                    },
+                    dockerImage: ansible_docker_image,
+                    force: true                    
+                ])
                 if(ansible_status != 0) {
                     def log_helper = new acronis.dco.LogHelper(this)
                     if (log_helper.getBuildLastNLines(120).join(' ').contains('ERROR! Specified hosts and/or --limit does not match any hosts')) {
@@ -87,10 +93,11 @@ node('master') {
                     printToConsoleAndSendMessage("SSL Certificate Expiration Scan complete: No certificates approaching expiration [default threshold: 21 days].")
                 }else{
                     echo "\${expiring_certs_list_pretty}"
-                    printToConsoleAndSendMessage("\\nSSL Certificate Expiration Scan complete: \${expiring_certs_list.size()} certificate(s) approaching expiration")
+                    printToConsoleAndSendMessage("\nSSL Certificate Expiration Scan complete: \${expiring_certs_list.size()} certificate(s) approaching expiration")
                     expiring_certs_list.eachWithIndex{ item, index ->
                         def firstItem = (item?.ssl_check_output && item?.ssl_check_output.size() > 0) ? item?.ssl_check_output[0] : null
-                        printToConsoleAndSendMessage("\\nExpiring Certificate \${index + 1} of \${expiring_certs_list.size()}:\\nPDC: \${item.pdc} \\nVDC:\${item?.vdc} \\nEnddate: \${firstItem} \\nJob: \${env.BUILD_URL}")
+                        sleep(5)
+                        printToConsoleAndSendMessage("\nExpiring Certificate \${index + 1} of \${expiring_certs_list.size()}:\nPDC: \${item.pdc} \nVDC:\${item?.vdc} \nEnddate: \${firstItem} \nJob: \${env.BUILD_URL}")
                     }
 
                     expiring_certs_list.each { item ->
@@ -103,7 +110,7 @@ node('master') {
                                             string(name: 'MASTER_WORKSPACE', value: "\${WORKSPACE}"),
                                             string(name: 'PLAYBOOK_NAME', value: PLAYBOOK_NAME),
                                             string(name: 'EXPIRINNG_CERTS_LIST', value: JsonOutput.toJson(item)),
-                                            string(name: 'ANSIBLE_OPTIONS', value: " -e project=\${item.project} -e pdc=\${item.pdc} -e vdc=\${item.vdc} -e check_cert_expiry=\${false} -e renew_certificate=\${renew_certificate} -e dco_environment=production ")
+                                            string(name: 'ANSIBLE_OPTIONS', value: " -e project=\${item.project} -e pdc=\${item.pdc} -e vdc=\${item.vdc? item.vdc : ""} -e check_cert_expiry=\${false} -e renew_certificate=\${renew_certificate} -e dco_environment=production ")
                                     ]
                             )
 
