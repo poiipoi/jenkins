@@ -249,7 +249,7 @@ def main() {
                         sh """
                             cd \${WORKSPACE}/\${it['pr_repo']}
                             git init
-                            git remote add origin ssh://git@git.acronis.com:7989/~$JIRA_USER/\${it['pr_repo']}.git
+                            git remote add origin ssh://git@git.acronis.com:7989/~\$JIRA_USER/\${it['pr_repo']}.git
                             git fetch origin
                             git config user.name "Jenkins Automated"
                             git config user.email "team-dco-sre@acronis.com"
