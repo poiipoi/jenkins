@@ -56,8 +56,8 @@ node('master') {
 
 
 def extractComponents(String summary) {
-    String normalized = summary.replaceAll("\\s+", "")
-    def pattern = /^\[DCO\]SSLCertificateRenewal\|(.*?)\|(.*?)\|(.*?)$/
+    String normalized = summary.replaceAll("\\\\s+", "")
+    def pattern = /^\\[DCO\\]SSLCertificateRenewal\\|(.*?)\\|(.*?)\\|(.*?)\$/
     def matcher = (normalized =~ pattern)
 
     if (matcher.matches()) {
@@ -229,7 +229,7 @@ def main() {
     // Check if production change ticket exists and approval by operations is true
     if(ticketExists && operationsApproval){
         if(isIssueLinked || isIssuePending  ){
-            printToConsoleAndSendMessage("Skipping digicert API request step (suspected duplicate) - Check and verify PR has been merged. Set status to Open or delete linked issues if this is a false positve  \\nJob: ${env.BUILD_URL}\\nIssue-URL: ${env.JIRA_BASE_URL}${env.TICKET_KEY}")
+            printToConsoleAndSendMessage("Skipping digicert API request step (suspected duplicate) - Check and verify PR has been merged. Set status to Open or delete linked issues if this is a false positve  \\nJob: \${env.BUILD_URL}\\nIssue-URL: \${env.JIRA_BASE_URL}\${env.TICKET_KEY}")
             return
         }
         doCreatePR = true
@@ -365,18 +365,18 @@ def createPR() {
             try {
                 // Download SRE PR submission scripts
                 checkout([
-                    $class: 'GitSCM',
+                    \$class: 'GitSCM',
                     branches: [[name: '*/master']],
                     extensions: [
                         [
-                            $class: 'CloneOption',
+                            \$class: 'CloneOption',
                             depth: 1,
                             noTags: true,
                             reference: '',
                             shallow: true
                         ],
                         [
-                            $class: 'RelativeTargetDirectory',
+                            \$class: 'RelativeTargetDirectory',
                             relativeTargetDir: 'sre_tools'
                         ]
                     ],
@@ -400,8 +400,8 @@ def createPR() {
                     ]) {
                         sshagent(credentials: [it['sshagent_credential']]){
                             sh """
-                                cd ${WORKSPACE}/${it['pr_repo']}
-                                git add ${it['pr_files']} 2>/dev/null
+                                cd \${WORKSPACE}/\${it['pr_repo']}
+                                git add \${it['pr_files']} 2>/dev/null
                                 git diff-index --quiet HEAD || git commit -a -m "\${env.DO_NOT_MERGE} #\${env.TICKET_KEY}" -m "\${it['pr_message']}" -m "dc: \${dc}" -m "URL: \${BUILD_URL}" -m "#NO-REF-ISSUE"
                                 git push --force --set-upstream origin hotfix/\${JOB_NAME}-\${BUILD_NUMBER} 
                             """
