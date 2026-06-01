@@ -1,3 +1,11 @@
-# SCRATCH PAD
-
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+sudo docker run --ulimit nofile=32768 \
+    --log-driver json-file --log-opt max-size=50m --log-opt max-file=10 \
+    -e ENDPOINT_URL='suntrustng.luminatesec.com' \
+    -e TENANT_IDENTIFIER='f27e03c930bd4605a61e78b0455dac60_suntrustng' \
+    --network=host \
+    -d \
+    --name='SUNTRUST-LDAP' \
+    --restart=on-failure \
+    -e HTTPS_SKIP_CERT_VERIFY='true' \
+    -e OTP='f4947174-9908-4902-aa46-7075d555cb81' \
+    sac-docker.packages.broadcom.com/luminate/connector:2.11.16
